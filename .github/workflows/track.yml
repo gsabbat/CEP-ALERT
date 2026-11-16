@@ -1,0 +1,39 @@
+name: CEP candidate tracker
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # every 10 minutes (GitHub may run it a few minutes late)
+  workflow_dispatch:          # lets you run it by hand from the Actions tab
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cep-tracker
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check the CEP site
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: python tracker.py
+
+      - name: Save what was seen
+        run: |
+          git config user.name "cep-tracker"
+          git config user.email "cep-tracker@users.noreply.github.com"
+          git add state/known.json
+          git diff --cached --quiet || (git commit -m "Update candidate list" && git push)
