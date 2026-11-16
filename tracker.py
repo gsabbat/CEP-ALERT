@@ -5,7 +5,8 @@ Checks the CEP candidate dashboard (https://tableau.cephaiti.ht) and sends
 an alert when a candidate is added or removed in these lists:
   - President (national)
   - Senator, Sud-Est
-  - Deputy, Sud-Est
+  - Deputy, Jacmel (Sud-Est)
+  - Mayor, Jacmel (Sud-Est)
 
 Alerts go to a phone (ntfy app) and/or email, depending on which
 settings are filled in. Uses only the Python standard library.
@@ -18,7 +19,8 @@ Settings (environment variables / GitHub secrets):
                   A carrier SMS address (e.g. 5551234567@tmomail.net)
                   also works here to get a text message.
   WATCH           which lists to watch, comma-separated.
-                  Default: president,senateur_se,depute_se
+                  Default: president,senateur_se,depute_jacmel,maire_jacmel
+                  Also available: depute_se (all Sud-Est deputies)
 """
 
 import json
@@ -38,8 +40,12 @@ USER_AGENT = "Mozilla/5.0 (CEP candidate tracker; personal use)"
 LISTS = {
     "president":   {"label": "Président",          "params": {"poste": "Président"}},
     "senateur_se": {"label": "Sénateur (Sud-Est)", "params": {"poste": "Sénateur", "departement": "02"}},
+    # Sud-Est = département 02. Jacmel = circonscription 044 (deputies), commune 01 (mayors).
+    "depute_jacmel": {"label": "Député (Jacmel)",  "params": {"poste": "Député", "departement": "02", "circonscription": "044"}},
+    "maire_jacmel":  {"label": "Maire (Jacmel)",   "params": {"poste": "Maire", "departement": "02", "commune": "01"}},
     "depute_se":   {"label": "Député (Sud-Est)",   "params": {"poste": "Député", "departement": "02"}},
 }
+DEFAULT_WATCH = "president,senateur_se,depute_jacmel,maire_jacmel"
 
 # The 33 presidential candidates shown on 15/11/2026 at 8:22 PM (Haiti time).
 # Used only on the very first run, so anyone added after that is reported.
@@ -95,6 +101,9 @@ def key(c):
 def describe(c):
     place = " / ".join(x for x in c.get("localite", []) if x and x != "National")
     parts = [f"{c.get('prenom', '')} {c.get('nom', '')}".strip(), c.get("structure") or "?"]
+    role = (c.get("position") or "").strip()
+    if role and role != "Titulaire":  # mayors run as a team: Titulaire + 2 adjoints
+        parts.append(role)
     if place:
         parts.append(place)
     return " - ".join(parts)
@@ -156,7 +165,7 @@ def alert(title, body, urgent=False):
 # ---------- main ----------
 
 def main():
-    watch = [w.strip() for w in os.environ.get("WATCH", ",".join(LISTS)).split(",") if w.strip()]
+    watch = [w.strip() for w in os.environ.get("WATCH") or DEFAULT_WATCH.split(",") if w.strip()]
     state = json.loads(STATE_FILE.read_text("utf-8")) if STATE_FILE.exists() else {}
     first_run = not state
     changed = False
@@ -167,6 +176,9 @@ def main():
         print(f"Checking {cfg['label']} ...")
         items, total = fetch_list(cfg["params"])
         current = {key(c): describe(c) for c in items}
+        roles = {"Titulaire": 0, "1er Adjoint": 1, "2ème Adjoint": 2}
+        team_order = {key(c): (c.get("structure") or "", roles.get(c.get("position"), 3), key(c)) for c in items}
+        ordered = lambda keys: sorted(keys, key=lambda k: team_order.get(k, ("", 9, k)))
         print(f"  {len(current)} candidates (site says {total})")
 
         if len(current) < total * 0.9:
@@ -182,13 +194,20 @@ def main():
         else:
             known = None  # nothing to compare yet
 
-        summary.append(f"{cfg['label']}: {len(current)} "
-                       f"({len(current) - BASELINE_COUNTS.get(name, len(current)):+d} since 15/11 8:22 PM)")
+        line = f"{cfg['label']}: {len(current)}"
+        if name in BASELINE_COUNTS:
+            line += f" ({len(current) - BASELINE_COUNTS[name]:+d} since 15/11 8:22 PM)"
+        summary.append(line)
 
         if known is None:
             print("  first look at this list, saved for next time")
+            if not first_run:
+                names = "\n".join(f"- {current[k]}" for k in ordered(current))
+                alert(f"Now watching {cfg['label']}",
+                      f"{len(current)} names on the site now:\n{names}\n\n"
+                      "You will get an alert when a name is added or removed.")
         else:
-            added = sorted(set(current) - set(known))
+            added = ordered(set(current) - set(known))
             removed = sorted(set(known) - set(current))
             if added:
                 lines = "\n".join(f"+ {current[k]}" for k in added)
@@ -209,6 +228,10 @@ def main():
         if state.get(name) != current:
             state[name] = current
             changed = True
+
+    for old in [k for k in state if k not in watch]:
+        del state[old]  # stop keeping lists that are no longer watched
+        changed = True
 
     if first_run:
         alert("CEP tracker is running",
