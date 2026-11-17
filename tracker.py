@@ -233,6 +233,11 @@ def main():
         del state[old]  # stop keeping lists that are no longer watched
         changed = True
 
+    if not first_run and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
+        # Run started by hand from the Actions tab: send a status message as a test.
+        alert("CEP tracker check (manual run)",
+              "The tracker is working. Candidates now on the site:\n" + "\n".join(summary))
+
     if first_run:
         alert("CEP tracker is running",
               "Candidates now on the site:\n" + "\n".join(summary) +
